@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
+use derive_more::Sub;
 use quicksilver::QuicksilverError as QError;
 use quicksilver::geom::{Circle, Vector};
 use quicksilver::graphics::{Color, Graphics};
 use quicksilver::lifecycle::{self, Event, EventStream, Settings, Window};
-use specs::Component;
+use specs::{Component, SystemData};
 use specs::prelude::*;
 
 use log::{debug, info, trace};
@@ -32,6 +33,7 @@ impl<'a> System<'a> for UpdateDurations {
     fn run(&mut self, mut fd: Self::SystemData) {
         let now = Instant::now();
         fd.0 = now - self.last_frame;
+        self.last_frame = now;
     }
 }
 
@@ -42,7 +44,7 @@ struct Star {
     size: f32,
 }
 
-#[derive(Copy, Clone, Component, Debug)]
+#[derive(Copy, Clone, Component, Debug, Sub)]
 #[storage(DenseVecStorage)]
 struct Position(Vector);
 
@@ -51,6 +53,61 @@ struct Position(Vector);
 #[derive(Copy, Clone, Component, Debug)]
 #[storage(DenseVecStorage)]
 struct Speed(Vector);
+
+#[derive(Copy, Clone, Component, Debug)]
+#[storage(DenseVecStorage)]
+struct Mass(f32);
+
+#[derive(Debug)]
+struct Gravity {
+    /// Gravity constant tuned to match our unit-less masses and pixel-distances.
+    force: f32,
+}
+
+#[derive(SystemData)]
+struct GravityParams<'a> {
+    frame_duration: Read<'a, FrameDuration>,
+    difficulty_mod: ReadExpect<'a, DifficultyTimeMod>,
+    masses: ReadStorage<'a, Mass>,
+    positions: ReadStorage<'a, Position>,
+    speeds: WriteStorage<'a, Speed>,
+}
+
+impl<'a> System<'a> for Gravity {
+    type SystemData = GravityParams<'a>;
+
+    fn run(&mut self, params: GravityParams) {
+        let GravityParams {
+            frame_duration,
+            difficulty_mod,
+            masses,
+            positions,
+            mut speeds,
+        } = params;
+        (&mut speeds, &masses, &positions)
+            .par_join()
+            .for_each(|(speed_1, mass_1, pos_1)| {
+                let speed_inc: Vector = (&masses, &positions)
+                    .join()
+                    .map(|(mass_2, pos_2)| {
+                        let dist_euclid = *pos_2 - *pos_1;
+                        let dist_sq = dist_euclid.0.len2();
+                        if dist_sq <= 0.0 {
+                            return Vector::ZERO;
+                        }
+                        let force_size = self.force * mass_1.0 * mass_2.0 / dist_sq;
+                        debug_assert!(force_size >= 0.0);
+                        // TODO: Cap it somehow so it doesn't „shoot“ away
+                        dist_euclid.0.normalize() * force_size
+                    })
+                    .fold(Vector::ZERO, |a, b| a + b);
+                speed_1.0 += speed_inc
+                    * self.force
+                    * frame_duration.0.as_secs_f32()
+                    * difficulty_mod.0;
+            })
+    }
+}
 
 struct Movement;
 
@@ -110,7 +167,8 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 last_frame: Instant::now()
             }, "update-durations", &[]
         )
-        .with(Movement, "movement", &["update-durations"])
+        .with(Gravity { force: 1.0 }, "gravity", &["update-durations"])
+        .with(Movement, "movement", &["update-durations", "gravity"])
         .with_thread_local(Painter { gfx })
         .build();
     let mut world = World::new();
@@ -118,20 +176,23 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
 
     // This needs to be either loaded or generated somewhere. This is just for early
     // experiments/tests.
-    world.insert(DifficultyTimeMod(1.0));
+    world.insert(DifficultyTimeMod(100.0));
     world.create_entity()
         .with(Star { color: Color::BLUE, size: 2.0 })
-        .with(Position(Vector::new(50.0, 50.0)))
-        .with(Speed(Vector::new(5.5, 1.2)))
+        .with(Position(Vector::new(100.0, 250.0)))
+        .with(Speed(Vector::new(3.5, 3.2)))
+        .with(Mass(8.0))
         .build();
     world.create_entity()
         .with(Star { color: Color::RED, size: 3.5 })
         .with(Position(Vector::new(400.0, 400.0)))
-        .with(Speed(Vector::new(-0.5, -1.2)))
+        .with(Speed(Vector::new(-2, 1.2)))
+        .with(Mass(10.0))
         .build();
     world.create_entity()
         .with(Star { color: Color::YELLOW, size: 3.5 })
         .with(Position(Vector::new(500.0, 500.0)))
+        .with(Mass(50.0))
         .build();
 
     loop {

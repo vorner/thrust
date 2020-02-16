@@ -317,6 +317,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_more"
+version = "0.99.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2159be042979966de68315bce7034bb000c775f22e3e834e1c52ff78f041cae8"
+dependencies = [
+ "proc-macro2 1.0.8",
+ "quote 1.0.2",
+ "syn",
+]
+
+[[package]]
 name = "dispatch"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1194,8 +1205,20 @@ dependencies = [
  "hashbrown",
  "mopa",
  "rayon",
+ "shred-derive",
  "smallvec",
  "tynm",
+]
+
+[[package]]
+name = "shred-derive"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1f37080f2751fbf091dbdebaa95bd6cf9dbf74ad1d50396b1908518a1747fdf"
+dependencies = [
+ "proc-macro2 1.0.8",
+ "quote 1.0.2",
+ "syn",
 ]
 
 [[package]]
@@ -1314,6 +1337,7 @@ dependencies = [
 name = "thrust"
 version = "0.1.0"
 dependencies = [
+ "derive_more",
  "env_logger",
  "log",
  "quicksilver",
