@@ -11,3 +11,4 @@ edition = "2018"
 env_logger = "~0.7"
 quicksilver = { version = "0.4.0-alpha0.2", default-features = false }
 log = "~0.4"
+specs = { version = "~0.16", features = ["specs-derive"] }
