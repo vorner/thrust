@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 use quicksilver::QuicksilverError as QError;
 use quicksilver::geom::{Circle, Vector};
@@ -9,6 +10,31 @@ use specs::prelude::*;
 
 use log::{debug, info, trace};
 
+// TODO: Bugs/features to report
+// * Why can't quicksilver Scalar be implemented for f64?
+// * Panic → only logs, but keeps running.
+// * Specs derive on typedef doesn't work. Should it?
+
+#[derive(Copy, Clone, Debug)]
+struct DifficultyTimeMod(f32);
+
+#[derive(Copy, Clone, Default, Debug)]
+struct FrameDuration(Duration);
+
+#[derive(Debug)]
+struct UpdateDurations {
+    last_frame: Instant,
+}
+
+impl<'a> System<'a> for UpdateDurations {
+    type SystemData = Write<'a, FrameDuration>;
+
+    fn run(&mut self, mut fd: Self::SystemData) {
+        let now = Instant::now();
+        fd.0 = now - self.last_frame;
+    }
+}
+
 #[derive(Copy, Clone, Component, Debug)]
 #[storage(DenseVecStorage)]
 struct Star {
@@ -16,11 +42,36 @@ struct Star {
     size: f32,
 }
 
-// TODO: We probably should use something like f64 for positions, because we need to update them in
-// fine increments.
 #[derive(Copy, Clone, Component, Debug)]
 #[storage(DenseVecStorage)]
 struct Position(Vector);
+
+// Note: while we might have several things that can't move (therefore don't have speed), the
+// vector is small and the overhead for omitting empty ones is not worth it.
+#[derive(Copy, Clone, Component, Debug)]
+#[storage(DenseVecStorage)]
+struct Speed(Vector);
+
+struct Movement;
+
+impl<'a> System<'a> for Movement {
+    type SystemData = (
+        Read<'a, FrameDuration>,
+        ReadExpect<'a, DifficultyTimeMod>,
+        ReadStorage<'a, Speed>,
+        WriteStorage<'a, Position>,
+    );
+
+    fn run(&mut self, (frame_duration, difficulty, speeds, mut positions): Self::SystemData) {
+        let dur = frame_duration.0.as_secs_f32() * difficulty.0;
+
+        (&speeds, &mut positions)
+            .par_join()
+            .for_each(|(speed, position)| {
+                position.0 += speed.0 * dur;
+            });
+    }
+}
 
 struct Painter<'a> {
     gfx: &'a RefCell<Graphics>,
@@ -36,6 +87,7 @@ impl<'a> System<'a> for Painter<'_> {
         let mut gfx = self.gfx.borrow_mut();
 
         trace!("Drawing stars");
+        // :-( Can't use par_join here, because of gfx not !Send
         for (star, pos) in (&stars, &positions).join() {
             gfx.fill_circle(&Circle::new(pos.0, star.size), star.color);
         }
@@ -53,19 +105,33 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     let gfx = RefCell::new(gfx);
     let gfx = &gfx;
     let mut dispatcher = DispatcherBuilder::new()
+        .with(
+            UpdateDurations {
+                last_frame: Instant::now()
+            }, "update-durations", &[]
+        )
+        .with(Movement, "movement", &["update-durations"])
         .with_thread_local(Painter { gfx })
         .build();
     let mut world = World::new();
     dispatcher.setup(&mut world);
 
-    // This needs to be either loaded or generated somewhere
+    // This needs to be either loaded or generated somewhere. This is just for early
+    // experiments/tests.
+    world.insert(DifficultyTimeMod(1.0));
     world.create_entity()
         .with(Star { color: Color::BLUE, size: 2.0 })
-        .with(Position(Vector::new(50, 50)))
+        .with(Position(Vector::new(50.0, 50.0)))
+        .with(Speed(Vector::new(5.5, 1.2)))
         .build();
     world.create_entity()
         .with(Star { color: Color::RED, size: 3.5 })
-        .with(Position(Vector::new(400, 400)))
+        .with(Position(Vector::new(400.0, 400.0)))
+        .with(Speed(Vector::new(-0.5, -1.2)))
+        .build();
+    world.create_entity()
+        .with(Star { color: Color::YELLOW, size: 3.5 })
+        .with(Position(Vector::new(500.0, 500.0)))
         .build();
 
     loop {
