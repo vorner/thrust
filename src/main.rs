@@ -38,24 +38,24 @@ impl<'a> System<'a> for UpdateDurations {
 }
 
 #[derive(Copy, Clone, Component, Debug)]
-#[storage(DenseVecStorage)]
+#[storage(VecStorage)]
 struct Star {
     color: Color,
     size: f32,
 }
 
 #[derive(Copy, Clone, Component, Debug, Sub)]
-#[storage(DenseVecStorage)]
+#[storage(VecStorage)]
 struct Position(Vector);
 
 // Note: while we might have several things that can't move (therefore don't have speed), the
 // vector is small and the overhead for omitting empty ones is not worth it.
 #[derive(Copy, Clone, Component, Debug)]
-#[storage(DenseVecStorage)]
+#[storage(VecStorage)]
 struct Speed(Vector);
 
 #[derive(Copy, Clone, Component, Debug)]
-#[storage(DenseVecStorage)]
+#[storage(VecStorage)]
 struct Mass(f32);
 
 #[derive(Debug)]
