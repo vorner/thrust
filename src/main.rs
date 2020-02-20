@@ -8,8 +8,16 @@ use quicksilver::graphics::{Color, Graphics};
 use quicksilver::lifecycle::{self, Event, EventStream, Settings, Window};
 use specs::{Component, SystemData};
 use specs::prelude::*;
+use specs_hierarchy::{Hierarchy, HierarchySystem, Parent};
 
 use log::{debug, info, trace};
+
+const COLOR_THRUSTER_OFF: Color = Color {
+    r: 0.5,
+    g: 0.5,
+    b: 0.5,
+    a: 0.5,
+};
 
 #[derive(Copy, Clone, Component, Debug, Default)]
 #[storage(NullStorage)]
@@ -22,6 +30,24 @@ struct Rotation(f32);
 #[derive(Copy, Clone, Component, Debug)]
 #[storage(HashMapStorage)]
 struct RotationSpeed(f32);
+
+#[derive(Copy, Clone, Debug)]
+struct Thruster {
+    ship: Entity,
+    position: Vector,
+    direction: f32,
+    // Add force and rotation force, the latter computed from the other info
+}
+
+impl Component for Thruster {
+    type Storage = FlaggedStorage<Self, HashMapStorage<Self>>;
+}
+
+impl Parent for Thruster {
+    fn parent_entity(&self) -> Entity {
+        self.ship
+    }
+}
 
 // TODO: Bugs/features to report
 // * Why can't quicksilver Scalar be implemented for f64?
@@ -167,23 +193,40 @@ struct DrawShips<'a> {
     gfx: &'a RefCell<Graphics>,
 }
 
-impl<'a> System<'a> for DrawShips<'_> {
-    type SystemData = (
-        ReadStorage<'a, Ship>,
-        ReadStorage<'a, Position>,
-        ReadStorage<'a, Rotation>,
-    );
+#[derive(SystemData)]
+struct DrawShipData<'a> {
+    entities: Entities<'a>,
+    ships: ReadStorage<'a, Ship>,
+    positions: ReadStorage<'a, Position>,
+    rotations: ReadStorage<'a, Rotation>,
+    thrusters: ReadStorage<'a, Thruster>,
+    thruster_hierarchy: ReadExpect<'a, Hierarchy<Thruster>>,
+}
 
-    fn run(&mut self, (ships, positions, rotations): Self::SystemData) {
+impl<'a> System<'a> for DrawShips<'_> {
+    type SystemData = DrawShipData<'a>;
+
+    fn run(&mut self, d: Self::SystemData) {
         let mut gfx = self.gfx.borrow_mut();
 
         trace!("Drawing ships");
 
-        for (Ship, position, rotation) in (&ships, &positions, &rotations).join() {
-            trace!("Draw ship {:?} {:?}", position, rotation);
-            let transform = Transform::translate(position.0) * Transform::rotate(rotation.0);
+        for (_, pos, rotation, ent) in (&d.ships, &d.positions, &d.rotations, &d.entities).join() {
+            trace!("Draw ship {:?} {:?}", pos, rotation);
+            let transform = Transform::translate(pos.0) * Transform::rotate(rotation.0);
             gfx.set_transform(transform);
             gfx.stroke_path(&[Vector::new(-10.0, 0.0), Vector::new(10.0, 0.0)], Color::WHITE);
+            for thruster in d.thruster_hierarchy.children(ent) {
+                let thruster = d.thrusters
+                    .get(*thruster)
+                    .expect("Missing thruster reported as child");
+                let t = transform
+                    * Transform::translate(thruster.position)
+                    * Transform::rotate(thruster.direction);
+                gfx.set_transform(t);
+                // TODO: Check if it's on
+                gfx.stroke_path(&[Vector::ZERO, Vector::new(10.0, 0.0)], COLOR_THRUSTER_OFF);
+            }
         }
         gfx.set_transform(Transform::default());
     }
@@ -221,19 +264,20 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     // between.
     let gfx = RefCell::new(gfx);
     let gfx = &gfx;
+    let mut world = World::new();
     let mut dispatcher = DispatcherBuilder::new()
         .with(
             UpdateDurations {
                 last_frame: Instant::now()
             }, "update-durations", &[]
         )
+        .with(HierarchySystem::<Thruster>::new(&mut world), "thruster-hierarchy", &[])
         .with(Gravity { force: 1.0 }, "gravity", &["update-durations"])
         .with(Movement, "movement", &["update-durations", "gravity"])
         .with(Rotate, "rotate", &[])
         .with_thread_local(DrawStars { gfx })
         .with_thread_local(DrawShips { gfx })
         .build();
-    let mut world = World::new();
     dispatcher.setup(&mut world);
 
     // This needs to be either loaded or generated somewhere. This is just for early
@@ -256,13 +300,31 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(Position(Vector::new(500.0, 500.0)))
         .with(Mass(50.0))
         .build();
-    world.create_entity()
+    let ship = world.create_entity()
         .with(Ship)
         .with(Position(Vector::new(600.0, 650.0)))
         .with(Mass(50.0))
         .with(Speed(Vector::new(5.0, 0.0)))
         .with(Rotation(60.0))
         .with(RotationSpeed(1.0))
+        .build();
+    world.create_entity()
+        .with(
+            Thruster {
+                position: Vector::new(10.0, 0.0),
+                direction: 20.0,
+                ship,
+            }
+        )
+        .build();
+    world.create_entity()
+        .with(
+            Thruster {
+                position: Vector::new(10.0, 0.0),
+                direction: -20.0,
+                ship,
+            }
+        )
         .build();
 
     loop {
