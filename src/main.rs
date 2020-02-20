@@ -3,13 +3,25 @@ use std::time::{Duration, Instant};
 
 use derive_more::Sub;
 use quicksilver::QuicksilverError as QError;
-use quicksilver::geom::{Circle, Vector};
+use quicksilver::geom::{Circle, Vector, Transform};
 use quicksilver::graphics::{Color, Graphics};
 use quicksilver::lifecycle::{self, Event, EventStream, Settings, Window};
 use specs::{Component, SystemData};
 use specs::prelude::*;
 
 use log::{debug, info, trace};
+
+#[derive(Copy, Clone, Component, Debug, Default)]
+#[storage(NullStorage)]
+struct Ship;
+
+#[derive(Copy, Clone, Component, Debug)]
+#[storage(HashMapStorage)]
+struct Rotation(f32);
+
+#[derive(Copy, Clone, Component, Debug)]
+#[storage(HashMapStorage)]
+struct RotationSpeed(f32);
 
 // TODO: Bugs/features to report
 // * Why can't quicksilver Scalar be implemented for f64?
@@ -130,11 +142,11 @@ impl<'a> System<'a> for Movement {
     }
 }
 
-struct Painter<'a> {
+struct DrawStars<'a> {
     gfx: &'a RefCell<Graphics>,
 }
 
-impl<'a> System<'a> for Painter<'_> {
+impl<'a> System<'a> for DrawStars<'_> {
     type SystemData = (
         ReadStorage<'a, Star>,
         ReadStorage<'a, Position>,
@@ -148,6 +160,54 @@ impl<'a> System<'a> for Painter<'_> {
         for (star, pos) in (&stars, &positions).join() {
             gfx.fill_circle(&Circle::new(pos.0, star.size), star.color);
         }
+    }
+}
+
+struct DrawShips<'a> {
+    gfx: &'a RefCell<Graphics>,
+}
+
+impl<'a> System<'a> for DrawShips<'_> {
+    type SystemData = (
+        ReadStorage<'a, Ship>,
+        ReadStorage<'a, Position>,
+        ReadStorage<'a, Rotation>,
+    );
+
+    fn run(&mut self, (ships, positions, rotations): Self::SystemData) {
+        let mut gfx = self.gfx.borrow_mut();
+
+        trace!("Drawing ships");
+
+        for (Ship, position, rotation) in (&ships, &positions, &rotations).join() {
+            trace!("Draw ship {:?} {:?}", position, rotation);
+            let transform = Transform::translate(position.0) * Transform::rotate(rotation.0);
+            gfx.set_transform(transform);
+            gfx.stroke_path(&[Vector::new(-10.0, 0.0), Vector::new(10.0, 0.0)], Color::WHITE);
+        }
+        gfx.set_transform(Transform::default());
+    }
+}
+
+struct Rotate;
+
+impl<'a> System<'a> for Rotate {
+    type SystemData = (
+        Read<'a, FrameDuration>,
+        ReadExpect<'a, DifficultyTimeMod>,
+        ReadStorage<'a, RotationSpeed>,
+        WriteStorage<'a, Rotation>,
+    );
+
+    fn run(&mut self, (frame_duration, difficulty, speeds, mut rotations): Self::SystemData) {
+        let dur = frame_duration.0.as_secs_f32() * difficulty.0;
+
+        (&speeds, &mut rotations)
+            .par_join()
+            .for_each(|(speed, rotation)| {
+                // Seems like quicksilver works in degrees. Someone is sane at least.
+                rotation.0 = (rotation.0 + speed.0 * dur).rem_euclid(360.0);
+            });
     }
 }
 
@@ -169,7 +229,9 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         )
         .with(Gravity { force: 1.0 }, "gravity", &["update-durations"])
         .with(Movement, "movement", &["update-durations", "gravity"])
-        .with_thread_local(Painter { gfx })
+        .with(Rotate, "rotate", &[])
+        .with_thread_local(DrawStars { gfx })
+        .with_thread_local(DrawShips { gfx })
         .build();
     let mut world = World::new();
     dispatcher.setup(&mut world);
@@ -193,6 +255,14 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(Star { color: Color::YELLOW, size: 3.5 })
         .with(Position(Vector::new(500.0, 500.0)))
         .with(Mass(50.0))
+        .build();
+    world.create_entity()
+        .with(Ship)
+        .with(Position(Vector::new(600.0, 650.0)))
+        .with(Mass(50.0))
+        .with(Speed(Vector::new(5.0, 0.0)))
+        .with(Rotation(60.0))
+        .with(RotationSpeed(1.0))
         .build();
 
     loop {
