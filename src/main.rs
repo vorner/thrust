@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 use derive_more::Sub;
@@ -271,6 +272,45 @@ impl<'a> System<'a> for Rotate {
     }
 }
 
+struct Cond<C> {
+    val: bool,
+    _cond: PhantomData<C>,
+}
+
+struct ConditionalSystem<Cond, SubSys> {
+    subsys: SubSys,
+    _cond: Cond,
+}
+
+impl<Cond, SubSys> ConditionalSystem<Cond, SubSys> {
+    fn new(cond: Cond, subsys: SubSys) -> Self {
+        ConditionalSystem {
+            subsys,
+            _cond: cond,
+        }
+    }
+}
+
+impl<'a, Sub, C> System<'a> for ConditionalSystem<C, Sub>
+where
+    Sub: System<'a>,
+    Sub::SystemData: SystemData<'a>,
+    C: 'static + Send + Sync,
+{
+    type SystemData = (
+        ReadExpect<'a, Cond<C>>,
+        Sub::SystemData,
+    );
+
+    fn run(&mut self, (cond, sub): Self::SystemData) {
+        if cond.val {
+            self.subsys.run(sub);
+        }
+    }
+}
+
+struct Running;
+
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
     // XXX: Setup to its own function
 
@@ -282,6 +322,8 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     let gfx = RefCell::new(gfx);
     let gfx = &gfx;
     let mut world = World::new();
+    // TODO: Should we put the whole physics and such into a sub-dispatcher and make that one
+    // conditional?
     let mut dispatcher = DispatcherBuilder::new()
         .with(
             UpdateDurations {
@@ -289,9 +331,17 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
             }, "update-durations", &[]
         )
         .with(HierarchySystem::<Thruster>::new(&mut world), "thruster-hierarchy", &[])
-        .with(Gravity { force: 1.0 }, "gravity", &["update-durations"])
-        .with(Movement, "movement", &["update-durations", "gravity"])
-        .with(Rotate, "rotate", &[])
+        .with(
+            ConditionalSystem::new(Running, Gravity { force: 1.0 }),
+            "gravity",
+            &["update-durations"]
+        )
+        .with(
+            ConditionalSystem::new(Running, Movement),
+            "movement",
+            &["update-durations", "gravity"]
+        )
+        .with(ConditionalSystem::new(Running, Rotate), "rotate", &["update-durations"])
         .with_thread_local(DrawStars { gfx })
         .with_thread_local(DrawShips { gfx })
         .build();
@@ -301,6 +351,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     // experiments/tests.
     world.insert(DifficultyTimeMod(100.0));
     world.insert(Keys::new());
+    world.insert(Cond::<Running> { val: true, _cond: PhantomData });
     world.create_entity()
         .with(Star { color: Color::BLUE, size: 2.0 })
         .with(Position(Vector::new(100.0, 250.0)))
@@ -360,6 +411,13 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                     info!("Key press {:?}", event);
                     let keys = world.get_mut::<Keys>().expect("Keys are always present");
                     match event.key() {
+                        Key::Space if !event.is_down() => {
+                            let cond = world
+                                .get_mut::<Cond<Running>>()
+                                .expect("The running condition is always present");
+                            cond.val = !cond.val;
+                        }
+                        Key::Space => (),
                         Key::Escape if event.is_down() => {
                             info!("Terminating");
                             break 'mainloop;
@@ -371,7 +429,6 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                             keys.remove(&key);
                         }
                     }
-                    debug!("Currently active keys: {:?}", keys);
                 }
                 _ => (),
             }
