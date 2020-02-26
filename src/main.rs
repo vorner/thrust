@@ -1,22 +1,32 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use derive_more::Sub;
 use quicksilver::QuicksilverError as QError;
 use quicksilver::geom::{Circle, Vector, Transform};
 use quicksilver::graphics::{Color, Graphics};
-use quicksilver::lifecycle::{self, Event, EventStream, Settings, Window};
+use quicksilver::lifecycle::{self, Event, EventStream, Key, Settings, Window};
 use specs::{Component, SystemData};
 use specs::prelude::*;
 use specs_hierarchy::{Hierarchy, HierarchySystem, Parent};
 
 use log::{debug, info, trace};
 
+type Keys = HashSet<Key>;
+
 const COLOR_THRUSTER_OFF: Color = Color {
     r: 0.5,
     g: 0.5,
     b: 0.5,
     a: 0.5,
+};
+
+const COLOR_THRUSTER_ON: Color = Color {
+    r: 1.0,
+    g: 0.8,
+    b: 0.1,
+    a: 1.0,
 };
 
 #[derive(Copy, Clone, Component, Debug, Default)]
@@ -37,6 +47,7 @@ struct Thruster {
     position: Vector,
     direction: f32,
     // Add force and rotation force, the latter computed from the other info
+    key: Key,
 }
 
 impl Component for Thruster {
@@ -201,6 +212,8 @@ struct DrawShipData<'a> {
     rotations: ReadStorage<'a, Rotation>,
     thrusters: ReadStorage<'a, Thruster>,
     thruster_hierarchy: ReadExpect<'a, Hierarchy<Thruster>>,
+    // We need to know which thrusters are active
+    keys: Read<'a, Keys>,
 }
 
 impl<'a> System<'a> for DrawShips<'_> {
@@ -224,8 +237,12 @@ impl<'a> System<'a> for DrawShips<'_> {
                     * Transform::translate(thruster.position)
                     * Transform::rotate(thruster.direction);
                 gfx.set_transform(t);
-                // TODO: Check if it's on
-                gfx.stroke_path(&[Vector::ZERO, Vector::new(10.0, 0.0)], COLOR_THRUSTER_OFF);
+                let color = if d.keys.contains(&thruster.key) {
+                    COLOR_THRUSTER_ON
+                } else {
+                    COLOR_THRUSTER_OFF
+                };
+                gfx.stroke_path(&[Vector::ZERO, Vector::new(10.0, 0.0)], color);
             }
         }
         gfx.set_transform(Transform::default());
@@ -283,6 +300,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     // This needs to be either loaded or generated somewhere. This is just for early
     // experiments/tests.
     world.insert(DifficultyTimeMod(100.0));
+    world.insert(Keys::new());
     world.create_entity()
         .with(Star { color: Color::BLUE, size: 2.0 })
         .with(Position(Vector::new(100.0, 250.0)))
@@ -314,6 +332,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 position: Vector::new(10.0, 0.0),
                 direction: 20.0,
                 ship,
+                key: Key::Left,
             }
         )
         .build();
@@ -323,11 +342,12 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 position: Vector::new(10.0, 0.0),
                 direction: -20.0,
                 ship,
+                key: Key::Right,
             }
         )
         .build();
 
-    loop {
+    'mainloop: loop {
         trace!("Checking for events");
         while let Some(e) = ev.next_event().await {
             debug!("Received event {:?}", e);
@@ -335,6 +355,23 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 Event::Resized(_) => {
                     gfx.borrow_mut().fit_to_window(&window);
                     info!("Resize...");
+                }
+                Event::KeyboardInput(event) => {
+                    info!("Key press {:?}", event);
+                    let keys = world.get_mut::<Keys>().expect("Keys are always present");
+                    match event.key() {
+                        Key::Escape if event.is_down() => {
+                            info!("Terminating");
+                            break 'mainloop;
+                        }
+                        key if event.is_down() => {
+                            keys.insert(key);
+                        }
+                        key => {
+                            keys.remove(&key);
+                        }
+                    }
+                    debug!("Currently active keys: {:?}", keys);
                 }
                 _ => (),
             }
@@ -346,6 +383,8 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         gfx.borrow_mut().present(&window)?;
         world.maintain();
     }
+
+    Ok(())
 }
 
 fn main() {
