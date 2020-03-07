@@ -113,6 +113,10 @@ struct Mass(f32);
 struct Gravity {
     /// Gravity constant tuned to match our unit-less masses and pixel-distances.
     force: f32,
+    /// Disable gravity when closer than this, to prevent shooting away.
+    ///
+    /// Measured in distance *squared*.
+    closeness_limit: f32,
 }
 
 #[derive(SystemData)]
@@ -135,6 +139,7 @@ impl<'a> System<'a> for Gravity {
             positions,
             mut speeds,
         } = params;
+        let multiplier = self.force * frame_duration.0.as_secs_f32() * difficulty_mod.0;
         (&mut speeds, &masses, &positions)
             .par_join()
             .for_each(|(speed_1, mass_1, pos_1)| {
@@ -143,19 +148,16 @@ impl<'a> System<'a> for Gravity {
                     .map(|(mass_2, pos_2)| {
                         let dist_euclid = *pos_2 - *pos_1;
                         let dist_sq = dist_euclid.0.len2();
-                        if dist_sq <= 0.0 {
+                        if dist_sq <= self.closeness_limit {
                             return Vector::ZERO;
                         }
-                        let force_size = self.force * mass_1.0 * mass_2.0 / dist_sq;
+                        let force_size = mass_1.0 * mass_2.0 / dist_sq;
                         debug_assert!(force_size >= 0.0);
                         // TODO: Cap it somehow so it doesn't „shoot“ away
                         dist_euclid.0.normalize() * force_size
                     })
                     .fold(Vector::ZERO, |a, b| a + b);
-                speed_1.0 += speed_inc
-                    * self.force
-                    * frame_duration.0.as_secs_f32()
-                    * difficulty_mod.0;
+                speed_1.0 += speed_inc * multiplier;
             })
     }
 }
@@ -285,8 +287,6 @@ struct PhysicsSystems<'a, 'b> {
 }
 
 impl<'a, 'b> BatchController<'a, 'b> for PhysicsSystems<'a, 'b> {
-    // We are not sharing any resources with the sub-dispatcher. Therefore, it's fine to fetch them
-    // the usual way.
     type BatchSystemData = ReadExpect<'a, GameState>;
     unsafe fn create(accessor: BatchAccessor, dispatcher: Dispatcher<'a, 'b>) -> Self {
         Self {
@@ -331,12 +331,10 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     let gfx = &gfx;
     let mut world = World::new();
     let physics = DispatcherBuilder::new()
-        .with(Gravity { force: 1.0 }, "gravity", &[])
+        .with(Gravity { force: 1.0, closeness_limit: 100.0 }, "gravity", &[])
         .with(Movement, "movement", &["gravity"])
         .with(Rotate, "rotate", &[]);
 
-    // TODO: Should we put the whole physics and such into a sub-dispatcher and make that one
-    // conditional?
     let mut dispatcher = DispatcherBuilder::new()
         .with(HierarchySystem::<Thruster>::new(&mut world), "thruster-hierarchy", &[])
         .with(
