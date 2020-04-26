@@ -7,9 +7,8 @@ use quicksilver::QuicksilverError as QError;
 use quicksilver::geom::{Circle, Vector, Transform};
 use quicksilver::graphics::{Color, Graphics};
 use quicksilver::lifecycle::{self, Event, EventStream, Key, Settings, Window};
-use specs::{
-    AccessorCow, BatchAccessor, BatchController, BatchUncheckedWorld, Component, SystemData,
-};
+use specs::{Component, SystemData};
+use shred::MultiDispatchController;
 use specs::prelude::*;
 use specs_hierarchy::{Hierarchy, HierarchySystem, Parent};
 
@@ -61,11 +60,6 @@ impl Parent for Thruster {
         self.ship
     }
 }
-
-// TODO: Bugs/features to report
-// * Why can't quicksilver Scalar be implemented for f64?
-// * Panic → only logs, but keeps running.
-// * Specs derive on typedef doesn't work. Should it?
 
 #[derive(Copy, Clone, Debug)]
 struct DifficultyTimeMod(f32);
@@ -281,43 +275,15 @@ enum GameState {
     Paused,
 }
 
-struct PhysicsSystems<'a, 'b> {
-    accessor: BatchAccessor,
-    dispatcher: Dispatcher<'a, 'b>,
-}
+struct PhysicsSystems;
 
-impl<'a, 'b> BatchController<'a, 'b> for PhysicsSystems<'a, 'b> {
-    type BatchSystemData = ReadExpect<'a, GameState>;
-    unsafe fn create(accessor: BatchAccessor, dispatcher: Dispatcher<'a, 'b>) -> Self {
-        Self {
-            accessor,
-            dispatcher,
-        }
+impl<'a> MultiDispatchController<'a> for PhysicsSystems {
+    type SystemData = ReadExpect<'a, GameState>;
+
+    fn plan(&mut self, game_state: Self::SystemData) -> usize {
+        (*game_state == GameState::Running) as usize
     }
 }
-
-impl<'a> System<'a> for PhysicsSystems<'_, '_> {
-    type SystemData = BatchUncheckedWorld<'a>;
-
-    fn run(&mut self, data: Self::SystemData) {
-        let state = *data.0.fetch::<GameState>();
-        if state == GameState::Running {
-            self.dispatcher.dispatch(data.0);
-        }
-    }
-
-    fn accessor<'c>(&'c self) -> AccessorCow<'a, 'c, Self> {
-        AccessorCow::Ref(&self.accessor)
-    }
-
-    fn setup(&mut self, world: &mut World) {
-        self.dispatcher.setup(world);
-    }
-}
-
-// Not really. But this is a wart of the API. It won't let us create an instance of this directly
-// and it won't abuse it being Send, but we have to do this anyway.
-unsafe impl Send for PhysicsSystems<'_, '_> {}
 
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
     // XXX: Setup to its own function
@@ -342,7 +308,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 last_frame: Instant::now()
             }, "update-durations", &[]
         )
-        .with_batch::<PhysicsSystems>(physics, "physics", &["update-durations"])
+        .with_multi_batch(PhysicsSystems, physics, "physics", &["update-durations"])
         .with_thread_local(DrawStars { gfx })
         .with_thread_local(DrawShips { gfx })
         .build();
