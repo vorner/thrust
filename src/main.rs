@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use derive_more::Sub;
 use quicksilver::QuicksilverError as QError;
-use quicksilver::geom::{Circle, Vector, Transform};
+use quicksilver::geom::{Circle, Rectangle, Vector, Transform};
 use quicksilver::graphics::{Color, Graphics};
 use quicksilver::lifecycle::{self, Event, EventStream, Key, Settings, Window};
 use specs::{Component, SystemData};
@@ -370,9 +370,12 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         while let Some(e) = ev.next_event().await {
             debug!("Received event {:?}", e);
             match e {
-                Event::Resized(_) => {
-                    gfx.borrow_mut().fit_to_window(&window);
-                    info!("Resize...");
+                Event::Resized(resize) => {
+                    let mut gfx = gfx.borrow_mut();
+                    let viewport = Rectangle::new((0, 0), resize.logical_size());
+                    gfx.set_projection(Transform::orthographic(viewport));
+                    gfx.fit_to_window(&window);
+                    info!("Resize: {:?}", resize);
                 }
                 Event::KeyboardInput(event) => {
                     info!("Key press {:?}", event);
