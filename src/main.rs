@@ -49,6 +49,9 @@ struct Thruster {
     direction: f32,
     // Add force and rotation force, the latter computed from the other info
     key: Key,
+    push_direction: f32,
+    push: f32,
+    rotation: f32,
 }
 
 impl Component for Thruster {
@@ -198,6 +201,45 @@ impl<'a> System<'a> for DrawStars<'_> {
     }
 }
 
+struct FireThrusters;
+
+#[derive(SystemData)]
+struct FireThrustersData<'a> {
+    frame_duration: Read<'a, FrameDuration>,
+    entities: Entities<'a>,
+    ships: ReadStorage<'a, Ship>,
+    thrusters: ReadStorage<'a, Thruster>,
+    rotations: ReadStorage<'a, Rotation>,
+    thruster_hierarchy: ReadExpect<'a, Hierarchy<Thruster>>,
+    speeds: WriteStorage<'a, Speed>,
+    rotation_speeds: WriteStorage<'a, RotationSpeed>,
+    keys: Read<'a, Keys>,
+}
+
+impl<'a> System<'a> for FireThrusters {
+    type SystemData = FireThrustersData<'a>;
+
+    fn run(&mut self, mut d: Self::SystemData) {
+        let parts = (&d.ships, &d.rotations, &mut d.speeds, &mut d.rotation_speeds, &d.entities);
+        for (_, rotated, trans, rot, ent) in parts.join() {
+            trace!("Fire thrusters of ship {:?} {:?}", trans, rot);
+            for thruster in d.thruster_hierarchy.children(ent) {
+                let thruster = d.thrusters
+                    .get(*thruster)
+                    .expect("Missing thruster reported as child");
+                if d.keys.contains(&thruster.key) {
+                    trace!("Thruster {:?} active", thruster.key);
+                    let rotated = rotated.0 + thruster.push_direction;
+                    let push = Vector::from_angle(rotated) * thruster.push;
+                    // For unknown reasons, it seems to work in the opposite direction
+                    trans.0 -= push * d.frame_duration.0.as_secs_f32();
+                    rot.0 -= thruster.rotation * d.frame_duration.0.as_secs_f32();
+                }
+            }
+        }
+    }
+}
+
 struct DrawShips<'a> {
     gfx: &'a RefCell<Graphics>,
 }
@@ -298,7 +340,8 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     let mut world = World::new();
     let physics = DispatcherBuilder::new()
         .with(Gravity { force: 1.0, closeness_limit: 100.0 }, "gravity", &[])
-        .with(Movement, "movement", &["gravity"])
+        .with(FireThrusters, "fire-thrusters", &[])
+        .with(Movement, "movement", &["gravity", "fire-thrusters"])
         .with(Rotate, "rotate", &[]);
 
     let mut dispatcher = DispatcherBuilder::new()
@@ -351,6 +394,9 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 direction: 20.0,
                 ship,
                 key: Key::Left,
+                push: 3.0,
+                push_direction: 20.0,
+                rotation: 6.0,
             }
         )
         .build();
@@ -361,6 +407,9 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 direction: -20.0,
                 ship,
                 key: Key::Right,
+                push: 3.0,
+                push_direction: -20.0,
+                rotation: -6.0,
             }
         )
         .build();
