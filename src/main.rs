@@ -14,6 +14,10 @@ use specs_hierarchy::{Hierarchy, HierarchySystem, Parent};
 
 use log::{debug, info, trace};
 
+#[derive(Copy, Clone, Component, Debug, Default)]
+#[storage(NullStorage)]
+struct Landing;
+
 #[derive(Copy, Clone, Debug, Default)]
 struct Viewport {
     rect: Rectangle,
@@ -321,6 +325,25 @@ impl<'a> System<'a> for SetViewport<'_> {
     }
 }
 
+struct DrawLandings<'a> {
+    gfx: &'a RefCell<Graphics>,
+}
+
+impl<'a> System<'a> for DrawLandings<'_> {
+    type SystemData = (
+        ReadStorage<'a, Landing>,
+        ReadStorage<'a, Position>,
+    );
+
+    fn run(&mut self, (landings, positions): Self::SystemData) {
+        let mut gfx = self.gfx.borrow_mut();
+        for (_, position) in (&landings, &positions).join() {
+            gfx.stroke_circle(&Circle::new(position.0, 15.0), Color::RED);
+            gfx.stroke_circle(&Circle::new(position.0, 25.0), Color::BLUE);
+        }
+    }
+}
+
 struct Rotate;
 
 impl<'a> System<'a> for Rotate {
@@ -408,6 +431,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with_thread_local(SetViewport { gfx })
         .with_thread_local(DrawStars { gfx })
         .with_thread_local(DrawShips { gfx })
+        .with_thread_local(DrawLandings { gfx })
         .build();
     dispatcher.setup(&mut world);
 
@@ -499,6 +523,10 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 rotation: 0.0,
             }
         )
+        .build();
+    world.create_entity()
+        .with(Landing)
+        .with(Position(Vector::new(600.0, 300.0)))
         .build();
 
     'mainloop: loop {
