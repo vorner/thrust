@@ -14,6 +14,23 @@ use specs_hierarchy::{Hierarchy, HierarchySystem, Parent};
 
 use log::{debug, info, trace};
 
+#[derive(Copy, Clone, Debug, Default)]
+struct Viewport {
+    rect: Rectangle,
+    transform: Transform
+}
+
+impl Viewport {
+    fn update(&mut self) {
+        self.transform = Transform::orthographic(self.rect);
+    }
+
+    fn set_size(&mut self, size: Vector) {
+        self.rect.size = size;
+        self.update();
+    }
+}
+
 type Keys = HashSet<Key>;
 
 const COLOR_THRUSTER_OFF: Color = Color {
@@ -30,9 +47,11 @@ const COLOR_THRUSTER_ON: Color = Color {
     a: 1.0,
 };
 
-#[derive(Copy, Clone, Component, Debug, Default)]
-#[storage(NullStorage)]
-struct Ship;
+#[derive(Copy, Clone, Component, Debug)]
+#[storage(HashMapStorage)]
+struct Ship {
+    homing_key: Key,
+}
 
 #[derive(Copy, Clone, Component, Debug)]
 #[storage(HashMapStorage)]
@@ -290,6 +309,18 @@ impl<'a> System<'a> for DrawShips<'_> {
     }
 }
 
+struct SetViewport<'a> {
+    gfx: &'a RefCell<Graphics>,
+}
+
+impl<'a> System<'a> for SetViewport<'_> {
+    type SystemData = ReadExpect<'a, Viewport>;
+
+    fn run(&mut self, viewport: Self::SystemData) {
+        self.gfx.borrow_mut().set_projection(viewport.transform);
+    }
+}
+
 struct Rotate;
 
 impl<'a> System<'a> for Rotate {
@@ -328,6 +359,26 @@ impl<'a> MultiDispatchController<'a> for PhysicsSystems {
     }
 }
 
+struct Homing;
+
+impl<'a> System<'a> for Homing {
+    type SystemData = (
+        ReadStorage<'a, Ship>,
+        ReadStorage<'a, Position>,
+        ReadExpect<'a, Keys>,
+        WriteExpect<'a, Viewport>,
+    );
+
+    fn run(&mut self, (ships, positions, keys, mut viewport): Self::SystemData) {
+        for (ship, position) in (&ships, &positions).join() {
+            if keys.contains(&ship.homing_key) {
+                viewport.rect.pos = position.0 - viewport.rect.size / 2.0;
+                viewport.update();
+            }
+        }
+    }
+}
+
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
     // XXX: Setup to its own function
 
@@ -353,6 +404,8 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
             }, "update-durations", &[]
         )
         .with_multi_batch(PhysicsSystems, physics, "physics", &["update-durations"])
+        .with(Homing, "homing", &["physics"])
+        .with_thread_local(SetViewport { gfx })
         .with_thread_local(DrawStars { gfx })
         .with_thread_local(DrawShips { gfx })
         .build();
@@ -362,6 +415,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     // experiments/tests.
     world.insert(DifficultyTimeMod(100.0));
     world.insert(Keys::new());
+    world.insert(Viewport::default());
     world.insert(GameState::Running);
     world.create_entity()
         .with(Star { color: Color::BLUE, size: 2.0 })
@@ -381,7 +435,9 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(Mass(50.0))
         .build();
     let ship = world.create_entity()
-        .with(Ship)
+        .with(Ship {
+            homing_key: Key::Home,
+        })
         .with(Position(Vector::new(600.0, 650.0)))
         .with(Mass(50.0))
         .with(Speed(Vector::new(5.0, 0.0)))
@@ -451,9 +507,9 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
             debug!("Received event {:?}", e);
             match e {
                 Event::Resized(resize) => {
-                    let mut gfx = gfx.borrow_mut();
-                    let viewport = Rectangle::new((0, 0), resize.logical_size());
-                    gfx.set_projection(Transform::orthographic(viewport));
+                    let gfx = gfx.borrow();
+                    let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
+                    viewport.set_size(resize.logical_size().into());
                     gfx.fit_to_window(&window);
                     info!("Resize: {:?}", resize);
                 }
