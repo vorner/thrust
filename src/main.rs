@@ -47,6 +47,7 @@ struct Thruster {
     ship: Entity,
     position: Vector,
     direction: f32,
+    len: f32,
     // Add force and rotation force, the latter computed from the other info
     key: Key,
     push_direction: f32,
@@ -282,7 +283,7 @@ impl<'a> System<'a> for DrawShips<'_> {
                 } else {
                     COLOR_THRUSTER_OFF
                 };
-                gfx.stroke_path(&[Vector::ZERO, Vector::new(10.0, 0.0)], color);
+                gfx.stroke_path(&[Vector::ZERO, Vector::new(thruster.len, 0.0)], color);
             }
         }
         gfx.set_transform(Transform::default());
@@ -391,6 +392,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(
             Thruster {
                 position: Vector::new(10.0, 0.0),
+                len: 10.0,
                 direction: 20.0,
                 ship,
                 key: Key::Left,
@@ -404,12 +406,27 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(
             Thruster {
                 position: Vector::new(10.0, 0.0),
+                len: 10.0,
                 direction: -20.0,
                 ship,
                 key: Key::Right,
                 push: 3.0,
                 push_direction: -20.0,
                 rotation: -6.0,
+            }
+        )
+        .build();
+    world.create_entity()
+        .with(
+            Thruster {
+                position: Vector::new(-10.0, 0.0),
+                len: 3.0,
+                direction: 180.0,
+                ship,
+                key: Key::Up,
+                push: 1.0,
+                push_direction: 180.0,
+                rotation: 0.0,
             }
         )
         .build();
