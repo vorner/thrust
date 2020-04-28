@@ -423,9 +423,23 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                 len: 3.0,
                 direction: 180.0,
                 ship,
-                key: Key::Up,
+                key: Key::Down,
                 push: 1.0,
                 push_direction: 180.0,
+                rotation: 0.0,
+            }
+        )
+        .build();
+    world.create_entity()
+        .with(
+            Thruster {
+                position: Vector::new(10.0, 0.0),
+                len: 15.0,
+                direction: 0.0,
+                ship,
+                key: Key::Up,
+                push: 8.0,
+                push_direction: 0.0,
                 rotation: 0.0,
             }
         )
