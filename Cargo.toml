@@ -10,12 +10,14 @@ edition = "2018"
 derive_more = "~0.99"
 # TODO: Do we want to set up our own logger?
 env_logger = "~0.7"
+# Instant that works on the web too
+instant = { version = "~0.1", features = ["stdweb"] }
 # TODO: Disable font/ttf once fixed.
-quicksilver = { version = "0.4.0-alpha0.3", default-features = false, features = ["font", "ttf", "web-sys"] }
+quicksilver = { version = "0.4.0-alpha0.3", default-features = false, features = ["font", "ttf", "stdweb"] }
 log = "~0.4"
-shred = "~0.10"
-specs = { version = "~0.16", features = ["specs-derive", "shred-derive"] }
-specs-hierarchy = "~0.6"
+shred = { version = "~0.10", default-features = false }
+specs = { version = "~0.16", default-features = false, features = ["specs-derive", "shred-derive"] }
+specs-hierarchy = { version = "~0.6", default-features = false }
 
 [patch.crates-io]
-shred = { git = "https://github.com/vorner/shred", branch = "batch-api-ergonomics" }
+shred = { git = "https://github.com/vorner/shred", branch = "batch-api-ergonomics", default-features = false }

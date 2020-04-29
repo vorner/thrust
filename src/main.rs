@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 
 use derive_more::Sub;
+use instant::{Duration, Instant};
 use quicksilver::QuicksilverError as QError;
 use quicksilver::geom::{Circle, Rectangle, Vector, Transform};
 use quicksilver::graphics::{Color, Graphics};
@@ -162,7 +162,7 @@ impl<'a> System<'a> for Gravity {
         } = params;
         let multiplier = self.force * frame_duration.0.as_secs_f32() * difficulty_mod.0;
         (&mut speeds, &masses, &positions)
-            .par_join()
+            .join()
             .for_each(|(speed_1, mass_1, pos_1)| {
                 let speed_inc: Vector = (&masses, &positions)
                     .join()
@@ -197,7 +197,7 @@ impl<'a> System<'a> for Movement {
         let dur = frame_duration.0.as_secs_f32() * difficulty.0;
 
         (&speeds, &mut positions)
-            .par_join()
+            .join()
             .for_each(|(speed, position)| {
                 position.0 += speed.0 * dur;
             });
@@ -358,7 +358,7 @@ impl<'a> System<'a> for Rotate {
         let dur = frame_duration.0.as_secs_f32() * difficulty.0;
 
         (&speeds, &mut rotations)
-            .par_join()
+            .join()
             .for_each(|(speed, rotation)| {
                 // Seems like quicksilver works in degrees. Someone is sane at least.
                 rotation.0 = (rotation.0 + speed.0 * dur).rem_euclid(360.0);
@@ -403,15 +403,9 @@ impl<'a> System<'a> for Homing {
 }
 
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
-    // XXX: Setup to its own function
-
-    // :-( I don't like ref cells, but we need to thread the mut-borrow to both us for
-    // synchronization, resizing etc, and the drawing systems.
-    //
-    // We do take turns in who borrow it, it's just each needs to be able to hold onto it in
-    // between.
     let gfx = RefCell::new(gfx);
     let gfx = &gfx;
+
     let mut world = World::new();
     let physics = DispatcherBuilder::new()
         .with(Gravity { force: 1.0, closeness_limit: 100.0 }, "gravity", &[])
@@ -528,6 +522,13 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(Landing)
         .with(Position(Vector::new(600.0, 300.0)))
         .build();
+    // XXX: Setup to its own function
+
+    // :-( I don't like ref cells, but we need to thread the mut-borrow to both us for
+    // synchronization, resizing etc, and the drawing systems.
+    //
+    // We do take turns in who borrow it, it's just each needs to be able to hold onto it in
+    // between.
 
     'mainloop: loop {
         trace!("Checking for events");
@@ -575,7 +576,8 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
 
         trace!("Running a frame");
         gfx.borrow_mut().clear(Color::BLACK);
-        dispatcher.dispatch(&world);
+        dispatcher.dispatch_seq(&world);
+        dispatcher.dispatch_thread_local(&world);
         gfx.borrow_mut().present(&window)?;
         world.maintain();
     }
