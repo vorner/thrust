@@ -5,14 +5,14 @@ use std::time::{Duration, Instant};
 use derive_more::Sub;
 use quicksilver::QuicksilverError as QError;
 use quicksilver::geom::{Circle, Rectangle, Vector, Transform};
-use quicksilver::graphics::{Color, Graphics};
+use quicksilver::graphics::{Color, FontRenderer, Graphics, VectorFont};
 use quicksilver::lifecycle::{self, Event, EventStream, Key, Settings, Window};
 use specs::{Component, SystemData};
 use shred::MultiDispatchController;
 use specs::prelude::*;
 use specs_hierarchy::{Hierarchy, HierarchySystem, Parent};
 
-use log::{debug, info, trace};
+use log::{debug, error, info, trace};
 
 #[derive(Copy, Clone, Component, Debug, Default)]
 #[storage(NullStorage)]
@@ -368,8 +368,21 @@ impl<'a> System<'a> for Rotate {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum GameState {
+    Started,
     Running,
     Paused,
+    Won,
+}
+
+impl GameState {
+    fn toggle(&mut self) {
+        use GameState::*;
+        *self = match self {
+            Started | Paused => Running,
+            Running => Paused,
+            Won => Won,
+        };
+    }
 }
 
 struct PhysicsSystems;
@@ -402,7 +415,38 @@ impl<'a> System<'a> for Homing {
     }
 }
 
+struct DrawState<'a> {
+    gfx: &'a RefCell<Graphics>,
+    renderer: FontRenderer,
+}
+
+impl<'a> System<'a> for DrawState<'_> {
+    type SystemData = ReadExpect<'a, GameState>;
+
+    fn run(&mut self, game_state: Self::SystemData) {
+        let text = match *game_state {
+            GameState::Started => concat!(
+                "Get the ship into the landing area (red & blue circle)\n",
+                "Use arrows to control the thrusters\n",
+                "Home key to center view onto the ship\n",
+                "Spacebar to pause & unpause\n",
+            ),
+            GameState::Paused => "Paused",
+            GameState::Won => "Congratulations, you've won!",
+            GameState::Running => return,
+        };
+        let mut gfx = self.gfx.borrow_mut();
+        if let Err(e) = self.renderer.draw(&mut gfx, text, Color::WHITE, Vector::new(200, 200)) {
+            error!("Can't write text: {}", e);
+        }
+    }
+}
+
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
+    let font_renderer = VectorFont::load("Ubuntu_Mono/UbuntuMono-Regular.ttf")
+        .await?
+        .to_renderer(&gfx, 48.0)?;
+
     // XXX: Setup to its own function
 
     // :-( I don't like ref cells, but we need to thread the mut-borrow to both us for
@@ -432,6 +476,10 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with_thread_local(DrawStars { gfx })
         .with_thread_local(DrawShips { gfx })
         .with_thread_local(DrawLandings { gfx })
+        .with_thread_local(DrawState {
+            gfx,
+            renderer: font_renderer,
+        })
         .build();
     dispatcher.setup(&mut world);
 
@@ -440,7 +488,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     world.insert(DifficultyTimeMod(100.0));
     world.insert(Keys::new());
     world.insert(Viewport::default());
-    world.insert(GameState::Running);
+    world.insert(GameState::Started);
     world.create_entity()
         .with(Star { color: Color::BLUE, size: 2.0 })
         .with(Position(Vector::new(100.0, 250.0)))
@@ -549,12 +597,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                             let game_state = world
                                 .get_mut::<GameState>()
                                 .expect("The running condition is always present");
-                            let state = *game_state;
-                            let new = match state {
-                                GameState::Running => GameState::Paused,
-                                GameState::Paused => GameState::Running,
-                            };
-                            *game_state = new;
+                            game_state.toggle();
                         }
                         Key::Space => (),
                         Key::Escape if event.is_down() => {
