@@ -11,7 +11,7 @@ derive_more = "~0.99"
 # TODO: Do we want to set up our own logger?
 env_logger = "~0.7"
 # TODO: Disable font/ttf once fixed.
-quicksilver = { version = "0.4.0-alpha0.3", default-features = false, features = ["font", "ttf"] }
+quicksilver = { version = "0.4.0-alpha0.3", default-features = false, features = ["font", "ttf", "web-sys"] }
 log = "~0.4"
 shred = "~0.10"
 specs = { version = "~0.16", features = ["specs-derive", "shred-derive"] }
