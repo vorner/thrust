@@ -14,6 +14,8 @@ use specs_hierarchy::{Hierarchy, HierarchySystem, Parent};
 
 use log::{debug, error, info, trace};
 
+const LAND_DISTANCE: f32 = 25.0;
+
 #[derive(Copy, Clone, Component, Debug, Default)]
 #[storage(NullStorage)]
 struct Landing;
@@ -442,6 +444,42 @@ impl<'a> System<'a> for DrawState<'_> {
     }
 }
 
+#[derive(SystemData)]
+struct VictoryDetectorData<'a> {
+    positions: ReadStorage<'a, Position>,
+    ships: ReadStorage<'a, Ship>,
+    landings: ReadStorage<'a, Landing>,
+    state: WriteExpect<'a, GameState>,
+}
+
+struct VictoryDetector;
+
+impl<'a> System<'a> for VictoryDetector {
+    type SystemData = VictoryDetectorData<'a>;
+
+    fn run(&mut self, mut d: Self::SystemData) {
+        // Cache the positions, we'll need them all for each ship
+        let positions = (&d.positions, &d.landings)
+            .join()
+            .map(|(p, _)| p)
+            .collect::<Vec<_>>();
+
+        // Check if each ship is inside any landing area.
+        // We don't really care if one ship shares it with another.
+        let won = (&d.positions, &d.ships)
+            .join()
+            .all(|(ship_pos, _)| {
+                positions
+                    .iter()
+                    .any(|landing_pos| ship_pos.0.distance(landing_pos.0) <= LAND_DISTANCE)
+            });
+
+        if won {
+            *d.state = GameState::Won;
+        }
+    }
+}
+
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
     let font_renderer = VectorFont::load("Ubuntu_Mono/UbuntuMono-Regular.ttf")
         .await?
@@ -472,6 +510,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         )
         .with_multi_batch(PhysicsSystems, physics, "physics", &["update-durations"])
         .with(Homing, "homing", &["physics"])
+        .with(VictoryDetector, "victory-detector", &["physics"])
         .with_thread_local(SetViewport { gfx })
         .with_thread_local(DrawStars { gfx })
         .with_thread_local(DrawShips { gfx })
