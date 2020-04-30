@@ -423,9 +423,12 @@ struct DrawState<'a> {
 }
 
 impl<'a> System<'a> for DrawState<'_> {
-    type SystemData = ReadExpect<'a, GameState>;
+    type SystemData = (
+        ReadExpect<'a, GameState>,
+        ReadExpect<'a, Viewport>,
+    );
 
-    fn run(&mut self, game_state: Self::SystemData) {
+    fn run(&mut self, (game_state, viewport): Self::SystemData) {
         let text = match *game_state {
             GameState::Started => concat!(
                 "Get the ship into the landing area (red & blue circle)\n",
@@ -437,8 +440,9 @@ impl<'a> System<'a> for DrawState<'_> {
             GameState::Won => "Congratulations, you've won!",
             GameState::Running => return,
         };
+        let pos = viewport.rect.pos + Vector::new(200, 200);
         let mut gfx = self.gfx.borrow_mut();
-        if let Err(e) = self.renderer.draw(&mut gfx, text, Color::WHITE, Vector::new(200, 200)) {
+        if let Err(e) = self.renderer.draw(&mut gfx, text, Color::WHITE, pos) {
             error!("Can't write text: {}", e);
         }
     }
