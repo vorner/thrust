@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -484,6 +485,13 @@ impl<'a> System<'a> for VictoryDetector {
     }
 }
 
+fn adjust_viewport_to_window_size(gfx: std::cell::Ref<Graphics>, world: &mut World, window: &Window) {
+    let gfx = gfx.borrow();
+    let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
+    viewport.set_size(window.size().into());
+    gfx.fit_to_window(&window);
+}
+
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
     let font_renderer = VectorFont::load("Ubuntu_Mono/UbuntuMono-Regular.ttf")
         .await?
@@ -620,16 +628,17 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(Position(Vector::new(600.0, 300.0)))
         .build();
 
+
+    // Adjust the viewport before first frame
+    adjust_viewport_to_window_size(gfx.borrow(), &mut world, window.borrow());
+
     'mainloop: loop {
         trace!("Checking for events");
         while let Some(e) = ev.next_event().await {
             debug!("Received event {:?}", e);
             match e {
                 Event::Resized(resize) => {
-                    let gfx = gfx.borrow();
-                    let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
-                    viewport.set_size(resize.logical_size().into());
-                    gfx.fit_to_window(&window);
+                    adjust_viewport_to_window_size(gfx.borrow(), &mut world, window.borrow());
                     info!("Resize: {:?}", resize);
                 }
                 Event::KeyboardInput(event) => {
