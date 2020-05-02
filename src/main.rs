@@ -148,8 +148,7 @@ struct Position(Vector);
 struct Speed(Vector);
 
 #[derive(Copy, Clone, Component, Debug)]
-#[storage(VecStorage)]
-struct Mass(f32);
+#[storage(VecStorage)] struct Mass(f32);
 
 #[derive(Debug)]
 struct Gravity {
@@ -455,6 +454,7 @@ impl<'a> System<'a> for DrawState<'_> {
                 "Home key to center view onto the ship\n",
                 "Spacebar to pause & unpause\n",
                 "+/- to zoom\n",
+                "F1 to restart level\n",
             ),
             GameState::Paused => "Paused",
             GameState::Won => "Congratulations, you've won!",
@@ -504,59 +504,10 @@ impl<'a> System<'a> for VictoryDetector {
     }
 }
 
-async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
-    let font_renderer = VectorFont::load("Ubuntu_Mono/UbuntuMono-Regular.ttf")
-        .await?
-        .to_renderer(&gfx, 24.0)?;
+fn level(world: &mut World) {
+    // This deletes entities, but not resources.
+    world.delete_all();
 
-    // XXX: Setup to its own function
-
-    // :-( I don't like ref cells, but we need to thread the mut-borrow to both us for
-    // synchronization, resizing etc, and the drawing systems.
-    //
-    // We do take turns in who borrow it, it's just each needs to be able to hold onto it in
-    // between.
-    let gfx = RefCell::new(gfx);
-    let gfx = &gfx;
-    let mut world = World::new();
-    let physics = DispatcherBuilder::new()
-        .with(Gravity { force: 1.0, closeness_limit: 100.0 }, "gravity", &[])
-        .with(FireThrusters, "fire-thrusters", &[])
-        .with(Movement, "movement", &["gravity", "fire-thrusters"])
-        .with(Rotate, "rotate", &[]);
-
-    let mut dispatcher = DispatcherBuilder::new()
-        .with(HierarchySystem::<Thruster>::new(&mut world), "thruster-hierarchy", &[])
-        .with(
-            UpdateDurations {
-                last_frame: Instant::now()
-            }, "update-durations", &[]
-        )
-        .with_multi_batch(PhysicsSystems, physics, "physics", &["update-durations"])
-        .with(Homing, "homing", &["physics"])
-        .with(VictoryDetector, "victory-detector", &["physics"])
-        .with_thread_local(SetViewport { gfx })
-        .with_thread_local(DrawStars { gfx })
-        .with_thread_local(DrawShips { gfx })
-        .with_thread_local(DrawLandings { gfx })
-        .with_thread_local(DrawState {
-            gfx,
-            renderer: font_renderer,
-        })
-        .build();
-    dispatcher.setup(&mut world);
-
-    // This needs to be either loaded or generated somewhere. This is just for early
-    // experiments/tests.
-    world.insert(DifficultyTimeMod(100.0));
-    world.insert(Keys::new());
-
-    // Adjust the viewport before first frame
-    let mut viewport = Viewport::default();
-    viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
-    world.insert(viewport);
-
-    world.insert(GameState::Started);
     world.create_entity()
         .with(Star { color: Color::BLUE, size: 2.0 })
         .with(Position(Vector::new(100.0, 250.0)))
@@ -645,6 +596,65 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(Position(Vector::new(600.0, 300.0)))
         .build();
 
+    *world.fetch_mut::<GameState>() = GameState::Started;
+}
+
+async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
+    let font_renderer = VectorFont::load("Ubuntu_Mono/UbuntuMono-Regular.ttf")
+        .await?
+        .to_renderer(&gfx, 24.0)?;
+
+    // XXX: Setup to its own function
+
+    // :-( I don't like ref cells, but we need to thread the mut-borrow to both us for
+    // synchronization, resizing etc, and the drawing systems.
+    //
+    // We do take turns in who borrow it, it's just each needs to be able to hold onto it in
+    // between.
+    let gfx = RefCell::new(gfx);
+    let gfx = &gfx;
+    let mut world = World::new();
+    let physics = DispatcherBuilder::new()
+        .with(Gravity { force: 1.0, closeness_limit: 100.0 }, "gravity", &[])
+        .with(FireThrusters, "fire-thrusters", &[])
+        .with(Movement, "movement", &["gravity", "fire-thrusters"])
+        .with(Rotate, "rotate", &[]);
+
+    let mut dispatcher = DispatcherBuilder::new()
+        .with(HierarchySystem::<Thruster>::new(&mut world), "thruster-hierarchy", &[])
+        .with(
+            UpdateDurations {
+                last_frame: Instant::now()
+            }, "update-durations", &[]
+        )
+        .with_multi_batch(PhysicsSystems, physics, "physics", &["update-durations"])
+        .with(Homing, "homing", &["physics"])
+        .with(VictoryDetector, "victory-detector", &["physics"])
+        .with_thread_local(SetViewport { gfx })
+        .with_thread_local(DrawStars { gfx })
+        .with_thread_local(DrawShips { gfx })
+        .with_thread_local(DrawLandings { gfx })
+        .with_thread_local(DrawState {
+            gfx,
+            renderer: font_renderer,
+        })
+        .build();
+    dispatcher.setup(&mut world);
+
+    // This needs to be either loaded or generated somewhere. This is just for early
+    // experiments/tests.
+    world.insert(DifficultyTimeMod(100.0));
+    world.insert(Keys::new());
+
+    // Adjust the viewport before first frame
+    let mut viewport = Viewport::default();
+    viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
+    world.insert(viewport);
+
+    world.insert(GameState::Started);
+
+    level(&mut world);
+
     'mainloop: loop {
         trace!("Checking for events");
         while let Some(e) = ev.next_event().await {
@@ -671,6 +681,10 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                             info!("Terminating");
                             break 'mainloop;
                         }
+                        Key::End | Key::F1 if !event.is_down() => {
+                            level(&mut world);
+                        }
+                        Key::End | Key::F1 => (),
                         Key::Equals | Key::Add if !event.is_down() => {
                             let viewport = world.get_mut::<Viewport>()
                                 .expect("Viewport is always present");
