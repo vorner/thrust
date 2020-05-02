@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -35,6 +34,11 @@ impl Viewport {
     fn set_size(&mut self, size: Vector) {
         self.rect.size = size;
         self.update();
+    }
+
+    fn adjust_to_window_size(&mut self, gfx: &Graphics, window: &Window) {
+        self.set_size(window.size().into());
+        gfx.fit_to_window(&window);
     }
 }
 
@@ -485,13 +489,6 @@ impl<'a> System<'a> for VictoryDetector {
     }
 }
 
-fn adjust_viewport_to_window_size(gfx: std::cell::Ref<Graphics>, world: &mut World, window: &Window) {
-    let gfx = gfx.borrow();
-    let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
-    viewport.set_size(window.size().into());
-    gfx.fit_to_window(&window);
-}
-
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
     let font_renderer = VectorFont::load("Ubuntu_Mono/UbuntuMono-Regular.ttf")
         .await?
@@ -630,7 +627,8 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
 
 
     // Adjust the viewport before first frame
-    adjust_viewport_to_window_size(gfx.borrow(), &mut world, window.borrow());
+    let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
+    viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
 
     'mainloop: loop {
         trace!("Checking for events");
@@ -638,7 +636,9 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
             debug!("Received event {:?}", e);
             match e {
                 Event::Resized(resize) => {
-                    adjust_viewport_to_window_size(gfx.borrow(), &mut world, window.borrow());
+                    let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
+                    viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
+
                     info!("Resize: {:?}", resize);
                 }
                 Event::KeyboardInput(event) => {
