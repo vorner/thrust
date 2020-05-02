@@ -35,6 +35,11 @@ impl Viewport {
         self.rect.size = size;
         self.update();
     }
+
+    fn adjust_to_window_size(&mut self, gfx: &Graphics, window: &Window) {
+        self.set_size(window.size().into());
+        gfx.fit_to_window(&window);
+    }
 }
 
 type Keys = HashSet<Key>;
@@ -620,16 +625,20 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(Position(Vector::new(600.0, 300.0)))
         .build();
 
+
+    // Adjust the viewport before first frame
+    let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
+    viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
+
     'mainloop: loop {
         trace!("Checking for events");
         while let Some(e) = ev.next_event().await {
             debug!("Received event {:?}", e);
             match e {
                 Event::Resized(resize) => {
-                    let gfx = gfx.borrow();
                     let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
-                    viewport.set_size(resize.logical_size().into());
-                    gfx.fit_to_window(&window);
+                    viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
+
                     info!("Resize: {:?}", resize);
                 }
                 Event::KeyboardInput(event) => {
