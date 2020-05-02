@@ -454,6 +454,7 @@ impl<'a> System<'a> for DrawState<'_> {
                 "Use arrows to control the thrusters\n",
                 "Home key to center view onto the ship\n",
                 "Spacebar to pause & unpause\n",
+                "+/- to zoom\n",
             ),
             GameState::Paused => "Paused",
             GameState::Won => "Congratulations, you've won!",
@@ -659,33 +660,33 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                     info!("Key press {:?}", event);
                     let keys = world.get_mut::<Keys>().expect("Keys are always present");
                     match event.key() {
-                        Key::Space if !event.is_down() => {
+                        Key::Space | Key::Pause if !event.is_down() => {
                             let game_state = world
                                 .get_mut::<GameState>()
                                 .expect("The running condition is always present");
                             game_state.toggle();
                         }
-                        Key::Space => (),
+                        Key::Space | Key::Pause => (),
                         Key::Escape if event.is_down() => {
                             info!("Terminating");
                             break 'mainloop;
                         }
-                        Key::Equals if !event.is_down() => {
+                        Key::Equals | Key::Add if !event.is_down() => {
                             let viewport = world.get_mut::<Viewport>()
                                 .expect("Viewport is always present");
                             viewport.zoom *= ZOOM_FACTOR;
                             viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
                             info!("Zoom in: {:?}", viewport);
                         }
-                        Key::Equals => (),
-                        Key::Subtract if !event.is_down() => {
+                        Key::Equals | Key::Add => (),
+                        Key::Subtract | Key::Minus if !event.is_down() => {
                             let viewport = world.get_mut::<Viewport>()
                                 .expect("Viewport is always present");
                             viewport.zoom /= ZOOM_FACTOR;
                             viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
                             info!("Zoom out: {:?}", viewport);
                         }
-                        Key::Subtract => (),
+                        Key::Subtract | Key::Minus => (),
                         key if event.is_down() => {
                             info!("Key down: {:?}", key);
                             keys.insert(key);
