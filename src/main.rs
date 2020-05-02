@@ -15,15 +15,29 @@ use specs_hierarchy::{Hierarchy, HierarchySystem, Parent};
 use log::{debug, error, info, trace};
 
 const LAND_DISTANCE: f32 = 25.0;
+const ZOOM_FACTOR: f32 = 1.05;
 
 #[derive(Copy, Clone, Component, Debug, Default)]
 #[storage(NullStorage)]
 struct Landing;
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug)]
 struct Viewport {
+    zoom: f32,
     rect: Rectangle,
     transform: Transform
+}
+
+impl Default for Viewport {
+    fn default() -> Viewport {
+        let mut me = Viewport {
+            zoom: 1.0,
+            rect: Rectangle::new((0, 0), (1024, 768)),
+            transform: Transform::default(),
+        };
+        me.update();
+        me
+    }
 }
 
 impl Viewport {
@@ -32,7 +46,7 @@ impl Viewport {
     }
 
     fn set_size(&mut self, size: Vector) {
-        self.rect.size = size;
+        self.rect.size = size / self.zoom;
         self.update();
     }
 
@@ -492,7 +506,7 @@ impl<'a> System<'a> for VictoryDetector {
 async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(), QError> {
     let font_renderer = VectorFont::load("Ubuntu_Mono/UbuntuMono-Regular.ttf")
         .await?
-        .to_renderer(&gfx, 48.0)?;
+        .to_renderer(&gfx, 24.0)?;
 
     // XXX: Setup to its own function
 
@@ -535,7 +549,12 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     // experiments/tests.
     world.insert(DifficultyTimeMod(100.0));
     world.insert(Keys::new());
-    world.insert(Viewport::default());
+
+    // Adjust the viewport before first frame
+    let mut viewport = Viewport::default();
+    viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
+    world.insert(viewport);
+
     world.insert(GameState::Started);
     world.create_entity()
         .with(Star { color: Color::BLUE, size: 2.0 })
@@ -625,11 +644,6 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
         .with(Position(Vector::new(600.0, 300.0)))
         .build();
 
-
-    // Adjust the viewport before first frame
-    let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
-    viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
-
     'mainloop: loop {
         trace!("Checking for events");
         while let Some(e) = ev.next_event().await {
@@ -639,7 +653,7 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                     let viewport = world.get_mut::<Viewport>().expect("Viewport is always present");
                     viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
 
-                    info!("Resize: {:?}", resize);
+                    info!("Resize: {:?}, {:?}", resize, viewport);
                 }
                 Event::KeyboardInput(event) => {
                     info!("Key press {:?}", event);
@@ -656,11 +670,29 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
                             info!("Terminating");
                             break 'mainloop;
                         }
+                        Key::Equals if !event.is_down() => {
+                            let viewport = world.get_mut::<Viewport>()
+                                .expect("Viewport is always present");
+                            viewport.zoom *= ZOOM_FACTOR;
+                            viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
+                            info!("Zoom in: {:?}", viewport);
+                        }
+                        Key::Equals => (),
+                        Key::Subtract if !event.is_down() => {
+                            let viewport = world.get_mut::<Viewport>()
+                                .expect("Viewport is always present");
+                            viewport.zoom /= ZOOM_FACTOR;
+                            viewport.adjust_to_window_size(&gfx.borrow_mut(), &window);
+                            info!("Zoom out: {:?}", viewport);
+                        }
+                        Key::Subtract => (),
                         key if event.is_down() => {
+                            info!("Key down: {:?}", key);
                             keys.insert(key);
                         }
                         key => {
                             keys.remove(&key);
+                            info!("Key up: {:?}", key);
                         }
                     }
                 }
