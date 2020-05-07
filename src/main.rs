@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::time::{Duration, Instant};
 
 use derive_more::Sub;
@@ -16,6 +18,7 @@ use log::{debug, error, info, trace};
 
 const LAND_DISTANCE: f32 = 25.0;
 const ZOOM_FACTOR: f32 = 1.05;
+const OVERHEAT_INDICATOR: f32 = 0.8;
 
 #[derive(Copy, Clone, Component, Debug, Default)]
 #[storage(NullStorage)]
@@ -76,6 +79,9 @@ const COLOR_THRUSTER_ON: Color = Color {
 #[storage(HashMapStorage)]
 struct Ship {
     homing_key: Key,
+    temperature: f32,
+    max_temp: f32,
+    temp_dec: f32,
 }
 
 #[derive(Copy, Clone, Component, Debug)]
@@ -97,6 +103,7 @@ struct Thruster {
     push_direction: f32,
     push: f32,
     rotation: f32,
+    heating: f32,
 }
 
 impl Component for Thruster {
@@ -308,11 +315,16 @@ impl<'a> System<'a> for DrawShips<'_> {
 
         trace!("Drawing ships");
 
-        for (_, pos, rotation, ent) in (&d.ships, &d.positions, &d.rotations, &d.entities).join() {
+        for (ship, pos, rotation, ent) in (&d.ships, &d.positions, &d.rotations, &d.entities).join() {
             trace!("Draw ship {:?} {:?}", pos, rotation);
             let transform = Transform::translate(pos.0) * Transform::rotate(rotation.0);
             gfx.set_transform(transform);
-            gfx.stroke_path(&[Vector::new(-10.0, 0.0), Vector::new(10.0, 0.0)], Color::WHITE);
+            let ship_color = if ship.max_temp * OVERHEAT_INDICATOR <= ship.temperature {
+                Color::RED
+            } else {
+                Color::WHITE
+            };
+            gfx.stroke_path(&[Vector::new(-10.0, 0.0), Vector::new(10.0, 0.0)], ship_color);
             for thruster in d.thruster_hierarchy.children(ent) {
                 let thruster = d.thrusters
                     .get(*thruster)
@@ -387,20 +399,35 @@ impl<'a> System<'a> for Rotate {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum LostReason {
+    Overheated,
+}
+
+impl Display for LostReason {
+    fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
+        match *self {
+            LostReason::Overheated => write!(fmt, "Overheated"),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum GameState {
     Started,
     Running,
     Paused,
     Won,
+    Lost(LostReason),
 }
 
 impl GameState {
     fn toggle(&mut self) {
         use GameState::*;
-        *self = match self {
+        *self = match *self {
             Started | Paused => Running,
             Running => Paused,
             Won => Won,
+            Lost(reason) => Lost(reason),
         };
     }
 }
@@ -448,21 +475,22 @@ impl<'a> System<'a> for DrawState<'_> {
 
     fn run(&mut self, (game_state, viewport): Self::SystemData) {
         let text = match *game_state {
-            GameState::Started => concat!(
+            GameState::Started => Cow::Borrowed(concat!(
                 "Get the ship into the landing area (red & blue circle)\n",
                 "Use arrows to control the thrusters\n",
                 "Home key to center view onto the ship\n",
                 "Spacebar to pause & unpause\n",
                 "+/- to zoom\n",
                 "F1 to restart level\n",
-            ),
-            GameState::Paused => "Paused",
-            GameState::Won => "Congratulations, you've won!",
+            )),
+            GameState::Paused => Cow::Borrowed("Paused"),
+            GameState::Won => Cow::Borrowed("Congratulations, you've won!"),
+            GameState::Lost(reason) => Cow::Owned(format!("You've lost ({})", reason)),
             GameState::Running => return,
         };
         let pos = viewport.rect.pos + Vector::new(200, 200);
         let mut gfx = self.gfx.borrow_mut();
-        if let Err(e) = self.renderer.draw(&mut gfx, text, Color::WHITE, pos) {
+        if let Err(e) = self.renderer.draw(&mut gfx, &text, Color::WHITE, pos) {
             error!("Can't write text: {}", e);
         }
     }
@@ -504,6 +532,75 @@ impl<'a> System<'a> for VictoryDetector {
     }
 }
 
+#[derive(SystemData)]
+struct TemperatureData<'a> {
+    state: WriteExpect<'a, GameState>,
+    duration: ReadExpect<'a, FrameDuration>,
+    entities: Entities<'a>,
+    ships: WriteStorage<'a, Ship>,
+    stars: ReadStorage<'a, Star>,
+    keys: ReadExpect<'a, Keys>,
+    thrusters: ReadStorage<'a, Thruster>,
+    thruster_hierarchy: ReadExpect<'a, Hierarchy<Thruster>>,
+    positions: ReadStorage<'a, Position>,
+}
+
+struct Temperature {
+    min_temp: f32,
+    heat_mult: f32,
+}
+
+impl<'a> System<'a> for Temperature {
+    type SystemData = TemperatureData<'a>;
+
+    fn run(&mut self, mut d: Self::SystemData) {
+        let positions = &d.positions;
+        let stars = &d.stars;
+        let thruster_hierarchy = &d.thruster_hierarchy;
+        let thrusters = &d.thrusters;
+        let keys = &d.keys;
+        let duration = d.duration.0.as_secs_f32();
+        let heat_mult = self.heat_mult;
+        let lost = (&mut d.ships, &d.positions, &d.entities)
+            .par_join()
+            .any(|(ship, sp, ent)| {
+                let heating_stars = (stars, positions)
+                    .join()
+                    .map(|(_, p)| {
+                        let dist = sp.0.distance(p.0);
+                        heat_mult / (dist * dist)
+                    })
+                    .sum::<f32>();
+
+
+                let heating_thrusters = thruster_hierarchy
+                    .children(ent)
+                    .iter()
+                    .map(|id| thrusters.get(*id).expect("Missing thruster"))
+                    .filter(|t| keys.contains(&t.key))
+                    .map(|t| t.heating)
+                    .sum::<f32>();
+
+                let temp_diff = ship.temperature - self.min_temp;
+                let dec = ship.temp_dec * temp_diff;
+
+                ship.temperature += duration * (heating_stars + heating_thrusters - dec);
+
+                if ship.temperature < self.min_temp {
+                    ship.temperature = self.min_temp;
+                }
+
+                debug!("Ship: {:?}", ship);
+
+                // Overheated?
+                ship.temperature > ship.max_temp
+            });
+        if lost {
+            *d.state = GameState::Lost(LostReason::Overheated);
+        }
+    }
+}
+
 fn level(world: &mut World) {
     // This deletes entities, but not resources.
     world.delete_all();
@@ -528,6 +625,9 @@ fn level(world: &mut World) {
     let ship = world.create_entity()
         .with(Ship {
             homing_key: Key::Home,
+            max_temp: 500.0,
+            temperature: -20.0,
+            temp_dec: 0.1,
         })
         .with(Position(Vector::new(600.0, 650.0)))
         .with(Mass(50.0))
@@ -546,6 +646,7 @@ fn level(world: &mut World) {
                 push: 3.0,
                 push_direction: 20.0,
                 rotation: 6.0,
+                heating: 5.0,
             }
         )
         .build();
@@ -560,6 +661,7 @@ fn level(world: &mut World) {
                 push: 3.0,
                 push_direction: -20.0,
                 rotation: -6.0,
+                heating: 5.0,
             }
         )
         .build();
@@ -574,6 +676,7 @@ fn level(world: &mut World) {
                 push: 1.0,
                 push_direction: 180.0,
                 rotation: 0.0,
+                heating: 2.0,
             }
         )
         .build();
@@ -588,6 +691,7 @@ fn level(world: &mut World) {
                 push: 8.0,
                 push_direction: 0.0,
                 rotation: 0.0,
+                heating: 10.0,
             }
         )
         .build();
@@ -614,11 +718,16 @@ async fn inner(window: Window, gfx: Graphics, mut ev: EventStream) -> Result<(),
     let gfx = RefCell::new(gfx);
     let gfx = &gfx;
     let mut world = World::new();
+    let temperature = Temperature {
+        heat_mult: 2_500_000.0,
+        min_temp: -200.0,
+    };
     let physics = DispatcherBuilder::new()
         .with(Gravity { force: 1.0, closeness_limit: 100.0 }, "gravity", &[])
         .with(FireThrusters, "fire-thrusters", &[])
         .with(Movement, "movement", &["gravity", "fire-thrusters"])
-        .with(Rotate, "rotate", &[]);
+        .with(Rotate, "rotate", &[])
+        .with(temperature, "temperature", &["movement"]);
 
     let mut dispatcher = DispatcherBuilder::new()
         .with(HierarchySystem::<Thruster>::new(&mut world), "thruster-hierarchy", &[])
